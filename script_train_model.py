@@ -1,3 +1,4 @@
+# train.py (full file)
 import os
 import sys
 import random
@@ -86,7 +87,11 @@ def get_model(rank, device, checkpoint, output_dir):
 	model = BertAbsSum(config=config, device=device)
 
 	if checkpoint:
-		model.load_state_dict(checkpoint["model_state_dict"])
+		# checkpoint may be the dict saved by previous run
+		if 'model_state_dict' in checkpoint:
+			model.load_state_dict(checkpoint['model_state_dict'])
+		else:
+			model.load_state_dict(checkpoint)
 
 	model.to(device)
 
@@ -115,7 +120,7 @@ def get_optimizer(model, checkpoint):
 
 	opt = torch.optim.AdamW(groups, lr=Params.learning_rate)
 
-	if checkpoint:
+	if checkpoint and 'optimizer_state_dict' in checkpoint:
 		opt.load_state_dict(checkpoint["optimizer_state_dict"])
 
 	return opt
@@ -153,6 +158,7 @@ def check_data(dataloader):
 
 
 def cal_performance(logits, ground):
+	# ground: [B, T] original target including BOS/EOS; model.forward expects input shifted so we shift ground here
 	ground = ground[:, 1:]
 	logits = logits.view(-1, logits.size(-1))
 	ground = ground.contiguous().view(-1)
@@ -228,7 +234,14 @@ def train(rank, world_size, output_dir):
 
 	# Main process only: save best checkpoint
 	if rank == 0:
-		torch.save(model.state_dict(), os.path.join(output_dir, "Best_Checkpoint.pt"))
+		# Save compatible dict with keys used by loader code
+		save_dict = {
+			'epoch': epoch,
+			'model_state_dict': model.module.state_dict() if isinstance(model, DistributedDataParallel) else model.state_dict(),
+			'optimizer_state_dict': optimizer.state_dict(),
+			'loss': loss.item() if 'loss' in locals() else 0.0
+		}
+		torch.save(save_dict, os.path.join(output_dir, "Best_Checkpoint.pt"))
 		logger.info("Training finished.")
 
 	if world_size > 1:
